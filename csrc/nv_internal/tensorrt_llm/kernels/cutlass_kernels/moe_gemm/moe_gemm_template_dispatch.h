@@ -662,6 +662,31 @@ MoeGemmRunner<T, WeightType, OutputType, ScaleBiasType, IsMXFPX>::getTmaWarpSpec
                    return config;
                  });
 
+  // SM121 (DGX Spark / GB10): The FINALIZE + swap_ab variants of the
+  // asymmetric tile shapes CtaShape128x256x64B and CtaShape256x128x64B
+  // require 102,400 bytes of dynamic shared memory, but GB10 only has
+  // 101,376 bytes (99 KB) per SM — 1 KB short.  cudaFuncSetAttribute
+  // returns cudaErrorInvalidValue, which CUTLASS surfaces as
+  // Status::kErrorInternal in gemm.initialize().
+  //
+  // Other variants of these tiles fit (≤93 KB) and are left available.
+  if (sm == 121) {
+    using TC = cutlass_extensions::CutlassTileConfigSM120;
+    using EFT = cutlass_extensions::CutlassGemmConfig::EpilogueFusionType;
+    tma_ws_configs.erase(
+        std::remove_if(
+            tma_ws_configs.begin(), tma_ws_configs.end(),
+            [](auto const& config) {
+              bool is_asymmetric =
+                  config.tile_config_sm120 == TC::CtaShape128x256x64B ||
+                  config.tile_config_sm120 == TC::CtaShape256x128x64B;
+              return is_asymmetric &&
+                     config.epilogue_fusion_type == EFT::FINALIZE &&
+                     config.swap_ab;
+            }),
+        tma_ws_configs.end());
+  }
+
   if (use_w4_groupwise) {
     // w4 groupwise implementation requires swap_ab to be true
     tma_ws_configs.erase(std::remove_if(tma_ws_configs.begin(), tma_ws_configs.end(),
