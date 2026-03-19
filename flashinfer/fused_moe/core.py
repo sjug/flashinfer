@@ -126,6 +126,24 @@ class DtypeTrtllmGen(IntEnum):
     Void = (0, 1, 0, 0, 21)
 
 
+def _normalize_cutlass_gemm2_tactic_for_runtime(
+    gemm2_tactic: int, gemm1_tactic_count: int
+) -> int:
+    """Translate combined GEMM2 tactic ids into the relative ids expected at runtime.
+
+    GEMM2 autotuning profiles tactics in the combined tactic space
+    ``[gemm1_count, gemm1_count + gemm2_count)``. The runtime binding, however,
+    interprets GEMM2 profile ids relative to the GEMM2 subrange. Preserve already
+    relative ids so stale caches do not get double-shifted.
+    """
+
+    if gemm2_tactic < 0:
+        return gemm2_tactic
+    if gemm2_tactic >= gemm1_tactic_count:
+        return gemm2_tactic - gemm1_tactic_count
+    return gemm2_tactic
+
+
 def trtllm_gen_dtype_has_scale(dtype: DtypeTrtllmGen) -> bool:
     if dtype in [
         DtypeTrtllmGen.MxE4m3,
@@ -624,6 +642,14 @@ def get_cutlass_fused_moe_module(backend: str = "100", use_fast_build: bool = Fa
             if min_latency_mode
             else []
         )
+        gemm2_tactic_for_runtime = gemm_tactic_2
+        try:
+            gemm1_count = moe_runner.fused_moe_runner.get_gemm1_tactic_count()
+            gemm2_tactic_for_runtime = _normalize_cutlass_gemm2_tactic_for_runtime(
+                gemm_tactic_2, gemm1_count
+            )
+        except Exception:
+            pass
         run_moe(
             output,
             input,
@@ -647,7 +673,7 @@ def get_cutlass_fused_moe_module(backend: str = "100", use_fast_build: bool = Fa
             cluster_rank,
             enable_alltoall,
             min_latency_mode,
-            [gemm_tactic_1, gemm_tactic_2],
+            [gemm_tactic_1, gemm2_tactic_for_runtime],
             enable_pdl,
             activation_type,
         )

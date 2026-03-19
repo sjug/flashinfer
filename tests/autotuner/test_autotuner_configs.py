@@ -13,6 +13,7 @@ import os
 import tempfile
 
 import pytest
+import torch
 
 from flashinfer.autotuner import (
     AutoTuner,
@@ -141,6 +142,7 @@ class TestSaveLoadRoundTrip:
 
             assert isinstance(data, dict)
             assert _METADATA_KEY in data
+            assert "nvfp4_cutlass_version" in data[_METADATA_KEY]
             configs = _config_entries(data)
             assert len(configs) == 1
 
@@ -658,6 +660,65 @@ class TestAutotuneCache:
                 assert len(tuner2._file_configs) == 1
         finally:
             os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Tests: choose_one() cache validation
+# ---------------------------------------------------------------------------
+
+
+class TestChooseOneCacheValidation:
+    def setup_method(self):
+        AutoTuner._instance = None
+        self.tuner = AutoTuner.get()
+
+    def teardown_method(self):
+        AutoTuner._instance = None
+
+    def test_choose_one_drops_invalid_file_tactic(self):
+        runner = FakeRunnerA(value=1)
+        inputs = [torch.empty((4, 8))]
+        input_shapes = tuple(t.size() for t in inputs)
+        cache_key = AutoTuner._get_cache_key("op1", runner, input_shapes, _TUNING_CONFIG)
+        file_key = str((cache_key[0], cache_key[1], cache_key[3]))
+        self.tuner._file_configs[file_key] = ("FakeRunnerA", 99)
+
+        chosen_runner, tactic = self.tuner.choose_one(
+            "op1", [runner], _TUNING_CONFIG, inputs
+        )
+
+        assert chosen_runner is runner
+        assert tactic == -1
+        assert file_key not in self.tuner._file_configs
+        assert file_key in self.tuner._invalid_file_config_keys
+
+    def test_choose_one_drops_invalid_in_memory_tactic(self):
+        runner = FakeRunnerA(value=1)
+        inputs = [torch.empty((4, 8))]
+        input_shapes = tuple(t.size() for t in inputs)
+        _populate_cache(self.tuner, runner, "op1", input_shapes, tactic=99)
+        cache_key = AutoTuner._get_cache_key("op1", runner, input_shapes, _TUNING_CONFIG)
+
+        chosen_runner, tactic = self.tuner.choose_one(
+            "op1", [runner], _TUNING_CONFIG, inputs
+        )
+
+        assert chosen_runner is runner
+        assert tactic == -1
+        assert cache_key not in self.tuner.profiling_cache
+
+    def test_choose_one_keeps_valid_cached_tactic(self):
+        runner = FakeRunnerA(value=1)
+        inputs = [torch.empty((4, 8))]
+        input_shapes = tuple(t.size() for t in inputs)
+        _populate_cache(self.tuner, runner, "op1", input_shapes, tactic=2)
+
+        chosen_runner, tactic = self.tuner.choose_one(
+            "op1", [runner], _TUNING_CONFIG, inputs
+        )
+
+        assert chosen_runner is runner
+        assert tactic == 2
 
 
 # ---------------------------------------------------------------------------
